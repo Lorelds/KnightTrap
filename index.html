@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Knight Trap</title>
+  <meta name="description" content="Knight Trap: lompat, bakar, jebak. Game strategi 7×7 dengan AI Minimax + Alpha-Beta Pruning.">
+  <meta name="theme-color" content="#0b0a0d">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23141217'/%3E%3Cpath fill='%23ff8a3d' d='M20 45C21 40 24 37 27 35C24 35 20 36 17 35C13 34 11 31 12 28L13 26C17 20 24 15 31 12L34 5L38 11C45 15 48 24 47 32C46 38 45 42 44 45Z'/%3E%3Crect x='15' y='47' width='34' height='8' rx='3' fill='%23ff8a3d'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;900&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- Shared SVG defs: knight gradients and glyph. Kept 0×0 rather than display:none so gradients resolve. -->
+  <svg class="svg-defs" width="0" height="0" aria-hidden="true" focusable="false">
+    <defs>
+      <linearGradient id="kg-0" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#e6f0ff"/>
+        <stop offset=".45" stop-color="#8fb8ff"/>
+        <stop offset="1" stop-color="#2f5fcf"/>
+      </linearGradient>
+      <linearGradient id="kg-1" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#fff0d6"/>
+        <stop offset=".45" stop-color="#ffaa55"/>
+        <stop offset="1" stop-color="#d9440f"/>
+      </linearGradient>
+      <linearGradient id="kg-shine" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="#fff" stop-opacity=".0"/>
+        <stop offset=".5" stop-color="#fff" stop-opacity=".55"/>
+        <stop offset="1" stop-color="#fff" stop-opacity=".0"/>
+      </linearGradient>
+      <symbol id="knight-glyph" viewBox="0 0 64 64">
+        <path class="k-body" style="fill:var(--kf);stroke:var(--ks);stroke-width:1.2;stroke-linejoin:round" d="M20 45C21 40 24 37 27 35C24 35 20 36 17 35C13 34 11 31 12 28L13 26C17 20 24 15 31 12L34 5L38 11C45 15 48 24 47 32C46 38 45 42 44 45Z"/>
+        <path class="k-mane" d="M36 12C42 16 45 23 45 31C45 36 44 40 43 44" style="fill:none;stroke:var(--km)" stroke-width="2.2" stroke-linecap="round"/>
+        <circle class="k-eye" cx="27" cy="20" r="1.9" style="fill:var(--ke)"/>
+        <path class="k-nostril" d="M15.5 29.5l1.8-.6" style="fill:none;stroke:var(--ke)" stroke-width="1.6" stroke-linecap="round"/>
+        <path class="k-collar" d="M18 46h28l2 4H16z" style="fill:var(--kf);stroke:var(--ks);stroke-width:1.2"/>
+        <rect class="k-base" x="12" y="51" width="40" height="7" rx="3" style="fill:var(--kf);stroke:var(--ks);stroke-width:1.2"/>
+      </symbol>
+    </defs>
+  </svg>
+
+  <canvas id="bg-embers" aria-hidden="true"></canvas>
+
+  <main id="app">
+    <!-- MAIN MENU -->
+    <section class="screen is-active" id="screen-menu" data-screen="menu">
+      <div class="menu-stage" aria-hidden="true"><div class="menu-board" id="menu-board"></div></div>
+      <div class="menu">
+        <div class="crest" aria-hidden="true">
+          <div class="crest-ring"></div>
+          <svg class="crest-knight" viewBox="0 0 64 64"><use href="#knight-glyph" class="kglyph p1"/></svg>
+        </div>
+        <h1 class="title" aria-label="Knight Trap">
+          <span class="title-word">Knight</span>
+          <span class="title-word title-trap">Trap</span>
+        </h1>
+        <p class="tagline" data-i18n="tagline">Lompat. Bakar. Jebak.</p>
+        <nav class="menu-buttons">
+          <button class="btn btn-primary btn-lg" data-go="sp">
+            <span class="btn-icon" aria-hidden="true">⚔</span>
+            <span><span data-i18n="singlePlayer">Single Player</span><small data-i18n="vsAi">Lawan AI</small></span>
+          </button>
+          <button class="btn btn-lg" data-go="mp">
+            <span class="btn-icon" aria-hidden="true">⚑</span>
+            <span><span data-i18n="multiplayer">Multiplayer</span><small data-i18n="mpSub">Lokal atau online</small></span>
+          </button>
+          <div class="menu-row">
+            <button class="btn btn-ghost" data-go="howto" data-i18n="howToPlay">Cara Bermain</button>
+            <button class="btn btn-ghost" data-go="settings" data-i18n="settings">Pengaturan</button>
+          </div>
+        </nav>
+        <p class="menu-foot">Minimax · Alpha-Beta Pruning · BFS · DFS</p>
+      </div>
+    </section>
+
+    <!-- SINGLE PLAYER SETUP -->
+    <section class="screen" id="screen-sp" data-screen="sp">
+      <div class="panel-page">
+        <header class="page-head">
+          <button class="icon-btn" data-back aria-label="Back">←</button>
+          <h2 data-i18n="singlePlayer">Single Player</h2>
+        </header>
+        <h3 class="label" data-i18n="difficulty">Tingkat kesulitan</h3>
+        <div class="diff-grid" role="radiogroup" id="diff-grid">
+          <button class="diff-card" role="radio" data-diff="easy">
+            <span class="diff-flames" aria-hidden="true"><i></i></span>
+            <strong data-i18n="easy">Easy</strong><span class="diff-meta" data-i18n="depth1">Kedalaman 1</span>
+          </button>
+          <button class="diff-card" role="radio" data-diff="medium">
+            <span class="diff-flames" aria-hidden="true"><i></i><i></i></span>
+            <strong data-i18n="medium">Medium</strong><span class="diff-meta" data-i18n="depth2">Kedalaman 2</span>
+          </button>
+          <button class="diff-card" role="radio" data-diff="hard">
+            <span class="diff-flames" aria-hidden="true"><i></i><i></i><i></i></span>
+            <strong data-i18n="hard">Hard</strong><span class="diff-meta" data-i18n="depth3">Kedalaman 3</span>
+          </button>
+          <button class="diff-card" role="radio" data-diff="expert">
+            <span class="diff-flames" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <strong data-i18n="expert">Expert</strong><span class="diff-meta" data-i18n="depth4">Kedalaman 4</span>
+          </button>
+        </div>
+        <h3 class="label" data-i18n="whoFirst">Siapa jalan duluan?</h3>
+        <div class="seg" role="radiogroup" id="first-seg">
+          <button role="radio" data-first="human" data-i18n="you">Kamu</button>
+          <button role="radio" data-first="ai">AI</button>
+          <button role="radio" data-first="random" data-i18n="random">Acak</button>
+        </div>
+        <label class="switch-row">
+          <span><strong>Alpha-Beta Pruning</strong><small data-i18n="abHint">Matikan untuk melihat Minimax biasa memeriksa lebih banyak posisi.</small></span>
+          <input type="checkbox" class="switch" id="sp-ab" checked>
+        </label>
+        <button class="btn btn-primary btn-lg btn-block" id="sp-start" data-i18n="startGame">Mulai</button>
+      </div>
+    </section>
+
+    <!-- MULTIPLAYER -->
+    <section class="screen" id="screen-mp" data-screen="mp">
+      <div class="panel-page">
+        <header class="page-head">
+          <button class="icon-btn" data-back aria-label="Back">←</button>
+          <h2 data-i18n="multiplayer">Multiplayer</h2>
+        </header>
+        <button class="mode-card" id="mp-local">
+          <span class="mode-art" aria-hidden="true">
+            <svg viewBox="0 0 64 64"><use href="#knight-glyph" class="kglyph p0"/></svg>
+            <svg viewBox="0 0 64 64" class="flip"><use href="#knight-glyph" class="kglyph p1"/></svg>
+          </span>
+          <span class="mode-text"><strong data-i18n="local">Lokal</strong><small data-i18n="localSub">Dua pemain di satu perangkat, bergantian.</small></span>
+          <span class="chev" aria-hidden="true">›</span>
+        </button>
+        <div class="mode-card mode-online">
+          <span class="mode-art" aria-hidden="true"><span class="globe">◎</span></span>
+          <span class="mode-text"><strong>Online</strong><small data-i18n="onlineSub">Main lewat internet dengan kode ruang.</small></span>
+          <div class="online-actions">
+            <button class="btn btn-primary" id="mp-host" data-i18n="createRoom">Buat ruang</button>
+            <form class="join-form" id="join-form" autocomplete="off">
+              <input id="join-code" class="code-input" maxlength="6" placeholder="KODE" aria-label="Room code" spellcheck="false" autocapitalize="characters">
+              <button class="btn" type="submit" data-i18n="join">Gabung</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ONLINE LOBBY -->
+    <section class="screen" id="screen-lobby" data-screen="lobby">
+      <div class="panel-page lobby">
+        <header class="page-head">
+          <button class="icon-btn" id="lobby-cancel" aria-label="Back">←</button>
+          <h2>Online</h2>
+        </header>
+        <div class="lobby-card">
+          <p class="label" id="lobby-label" data-i18n="roomCode">Kode ruang</p>
+          <div class="room-code" id="room-code">·····</div>
+          <button class="btn btn-ghost" id="copy-code" data-i18n="copy">Salin kode</button>
+          <div class="conn-status"><span class="dot" id="lobby-dot"></span><span id="lobby-status">…</span></div>
+          <p class="lobby-hint" id="lobby-hint" data-i18n="lobbyHint">Bagikan kode ini ke temanmu. Game mulai otomatis saat dia bergabung.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- HOW TO PLAY -->
+    <section class="screen" id="screen-howto" data-screen="howto">
+      <div class="panel-page wide">
+        <header class="page-head">
+          <button class="icon-btn" data-back aria-label="Back">←</button>
+          <h2 data-i18n="howToPlay">Cara Bermain</h2>
+        </header>
+        <div class="steps" id="howto-steps"></div>
+        <div class="lose-rule">
+          <span class="lose-icon" aria-hidden="true">⛓</span>
+          <p data-i18n-html="loseRule"></p>
+        </div>
+        <button class="btn btn-primary btn-lg btn-block" data-go="sp" data-i18n="playNow">Main sekarang</button>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="screen" id="screen-settings" data-screen="settings">
+      <div class="panel-page">
+        <header class="page-head">
+          <button class="icon-btn" data-back aria-label="Back">←</button>
+          <h2 data-i18n="settings">Pengaturan</h2>
+        </header>
+        <label class="switch-row">
+          <span><strong data-i18n="sound">Suara</strong><small data-i18n="soundSub">Efek lompat, bakar, dan jebakan.</small></span>
+          <input type="checkbox" class="switch" id="set-sound" checked>
+        </label>
+        <div class="switch-row">
+          <span><strong data-i18n="language">Bahasa</strong></span>
+          <div class="seg seg-sm" id="lang-seg" role="radiogroup">
+            <button role="radio" data-lang="id">Indonesia</button>
+            <button role="radio" data-lang="en">English</button>
+          </div>
+        </div>
+        <p class="credits">Knight Trap · Louis Yuriel Saputra, Clarrence Adriano Hemeldan, Shatrya Christiano Chandra · Universitas Ciputra 2026/2027</p>
+      </div>
+    </section>
+
+    <!-- GAME -->
+    <section class="screen" id="screen-game" data-screen="game">
+      <header class="game-top">
+        <button class="icon-btn" id="game-exit" aria-label="Menu">←</button>
+        <div class="game-mode" id="game-mode">—</div>
+        <div class="game-top-right">
+          <span class="net-pill" id="net-pill" hidden><span class="dot"></span><span class="net-text"></span></span>
+          <button class="icon-btn" id="game-sound" aria-label="Sound">♪</button>
+        </div>
+      </header>
+
+      <div class="game-layout">
+        <aside class="players" id="players">
+          <div class="pcard" data-side="0">
+            <svg class="pcard-knight" viewBox="0 0 64 64" aria-hidden="true"><use href="#knight-glyph" class="kglyph p0"/></svg>
+            <div class="pcard-info"><strong class="pcard-name">P1</strong><span class="pcard-sub"></span></div>
+            <div class="pcard-mob" title="Lompatan tersedia"><b>0</b><small data-i18n="jumps">lompatan</small></div>
+          </div>
+          <div class="vs" aria-hidden="true">VS</div>
+          <div class="pcard" data-side="1">
+            <svg class="pcard-knight" viewBox="0 0 64 64" aria-hidden="true"><use href="#knight-glyph" class="kglyph p1"/></svg>
+            <div class="pcard-info"><strong class="pcard-name">P2</strong><span class="pcard-sub"></span></div>
+            <div class="pcard-mob"><b>0</b><small data-i18n="jumps">lompatan</small></div>
+          </div>
+        </aside>
+
+        <div class="board-col">
+          <div class="status" id="status" aria-live="polite">
+            <span class="status-dot"></span><span class="status-text" id="status-text"></span>
+            <button class="status-undo" id="undo-jump" hidden data-i18n="undoJump">Batal lompat</button>
+          </div>
+          <div class="board-shell" id="board-shell">
+            <div class="board" id="board"></div>
+          </div>
+        </div>
+
+        <aside class="side" id="side">
+          <section class="ai-panel" id="ai-panel">
+            <header class="ai-head">
+              <h3 data-i18n="aiBrain">Otak AI</h3>
+              <span class="thinking" id="thinking"><i></i><i></i><i></i><span data-i18n="thinking">berpikir</span></span>
+            </header>
+            <div class="stats">
+              <div class="stat"><small data-i18n="statDepth">Kedalaman</small><b id="st-depth">–</b></div>
+              <div class="stat"><small data-i18n="statNodes">Posisi diperiksa</small><b id="st-nodes">–</b></div>
+              <div class="stat"><small data-i18n="statCutoffs">Cabang dipangkas</small><b id="st-cutoffs">–</b></div>
+              <div class="stat"><small data-i18n="statTime">Waktu</small><b id="st-time">–</b></div>
+              <div class="stat stat-wide"><small data-i18n="statScore">Skor langkah</small><b id="st-score">–</b></div>
+            </div>
+            <label class="switch-row compact">
+              <span><strong>Alpha-Beta</strong><small id="ab-state">ON</small></span>
+              <input type="checkbox" class="switch" id="game-ab" checked>
+            </label>
+          </section>
+          <section class="log-panel">
+            <h3 data-i18n="moveLog">Riwayat langkah</h3>
+            <ol class="log" id="log"></ol>
+          </section>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <!-- GAME OVER -->
+  <div class="modal" id="gameover" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="go-title">
+      <div class="go-crest"><svg viewBox="0 0 64 64"><use href="#knight-glyph" class="kglyph" id="go-glyph"/></svg></div>
+      <h2 id="go-title">—</h2>
+      <p id="go-sub"></p>
+      <div class="go-stats"><span><b id="go-moves">0</b> <span data-i18n="movesPlayed">langkah</span></span></div>
+      <div class="go-actions">
+        <button class="btn btn-primary btn-lg" id="go-rematch" data-i18n="rematch">Main lagi</button>
+        <button class="btn btn-ghost" id="go-menu" data-i18n="mainMenu">Menu utama</button>
+      </div>
+      <p class="go-wait" id="go-wait" hidden></p>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
