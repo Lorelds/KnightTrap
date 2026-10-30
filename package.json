@@ -1,7 +1,12 @@
 {
   "name": "knight-trap",
+  "description": "Two-player knight strategy game with a Minimax + Alpha-Beta AI",
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "node tests/run.mjs",
+    "test:quick": "node tests/run.mjs --quick"
+  },
   "engines": {
     "node": ">=18"
   },

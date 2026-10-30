@@ -13,6 +13,38 @@ The game is plain HTML, CSS and JavaScript ES modules. There is no framework and
 
 For the NPLC Universitas Ciputra rally (theme: Human vs AI), Single Player games also earn points, and teams are ranked on an online leaderboard. That part is two Vercel Serverless Functions backed by Upstash Redis.
 
+## Run the game
+
+The AI runs in a module Web Worker, so the page has to come from a web server. Opening `index.html` as a file will not work.
+
+```bash
+git clone https://github.com/Lorelds/KnightTrap.git
+cd KnightTrap
+npx serve .            # or: python -m http.server 8000
+```
+
+Then open the printed URL, for example http://localhost:3000.
+
+Online play loads PeerJS 1.5.4 from unpkg and uses the public PeerJS broker (0.peerjs.com) only to connect the two players. After that, moves go directly between the browsers. Both players need internet access. On some strict networks (for example a symmetric NAT without a TURN server) a direct WebRTC connection can fail. Single Player and Local mode work fully offline, apart from the Google Fonts, which fall back to system fonts.
+
+## Run the tests
+
+```bash
+npm test                     # full run: 100 games per level per opponent (about 4–5 minutes)
+npm run test:quick           # 20 games per match-up (about 25 seconds)
+```
+
+This needs Node 18 or newer and no packages (the API tests use an in-memory Redis stand-in). The script checks:
+
+1. **Rules**: legal jumps, burning, trap placement, the occupied-square block, loss detection, and serialization.
+2. **Alpha-Beta correctness**: 30 positions from seeded random play of 4–8 turns (seeds `20261028 + k`, printed). Alpha-Beta and plain Minimax must return identical scores and moves at depths 1, 2 and 3. It prints the node counts for both.
+3. **Strength**: each level plays 100 games against a random player and 100 against a greedy player, alternating who moves first, with the 4-second limit on. Medium and above must win at least 90% against random.
+4. **Response time**: average, p95 and maximum think time per level. Every level must stay under 4 s, and Easy through Hard under 1 s.
+5. **Online host validation**: drives the real `Game` class as host and checks that it rejects out-of-turn and illegal guest moves and accepts a legal one.
+6. **Points and leaderboard**: the per-move points and win bonus at all four levels, no points in Local or Online mode, and the server: a tampered move log, a forged score, an unfinished game, the rate limit, duplicate games, team totals and tie-breaking, the admin point values (validation, wrong key, lockout, saved values used for new submissions, reset), plus all three `/api` handlers.
+
+The script exits with code 1 if any check fails.
+
 ## Points and leaderboard
 
 Only Single Player games against the AI score. Local and Online games give no points. There are two kinds of points, both multiplied by the level (defaults: Easy ×1, Medium ×1.5, Hard ×2, Expert ×2.5):
@@ -68,37 +100,6 @@ DEL kt:total kt:wins kt:games kt:name kt:first
 ```
 
 That clears every team and keeps the admin's point values (`kt:rules`). Rate-limit and duplicate-game keys (`kt:rl:*`, `kt:game:*`) expire on their own. If the database is used only by this game, `FLUSHDB` does the same in one step.
-
-## Run the game
-
-The AI runs in a module Web Worker, so the page has to come from a web server. Opening `index.html` as a file will not work.
-
-```bash
-cd KnightTrap
-npx serve .            # or: python -m http.server 8000
-```
-
-Then open the printed URL, for example http://localhost:3000.
-
-Online play loads PeerJS 1.5.4 from unpkg and uses the public PeerJS broker (0.peerjs.com) only to connect the two players. After that, moves go directly between the browsers. Both players need internet access. On some strict networks (for example a symmetric NAT without a TURN server) a direct WebRTC connection can fail. Single Player and Local mode work fully offline, apart from the Google Fonts, which fall back to system fonts.
-
-## Run the tests
-
-```bash
-node tests/run.mjs           # full run: 100 games per level per opponent (about 4–5 minutes)
-node tests/run.mjs --quick   # 20 games per match-up (about 25 seconds)
-```
-
-This needs Node 18 or newer and no packages (the API tests use an in-memory Redis stand-in). The script checks:
-
-1. **Rules**: legal jumps, burning, trap placement, the occupied-square block, loss detection, and serialization.
-2. **Alpha-Beta correctness**: 30 positions from seeded random play of 4–8 turns (seeds `20261028 + k`, printed). Alpha-Beta and plain Minimax must return identical scores and moves at depths 1, 2 and 3. It prints the node counts for both.
-3. **Strength**: each level plays 100 games against a random player and 100 against a greedy player, alternating who moves first, with the 4-second limit on. Medium and above must win at least 90% against random.
-4. **Response time**: average, p95 and maximum think time per level. Every level must stay under 4 s, and Easy through Hard under 1 s.
-5. **Online host validation**: drives the real `Game` class as host and checks that it rejects out-of-turn and illegal guest moves and accepts a legal one.
-6. **Points and leaderboard**: the per-move points and win bonus at all four levels, no points in Local or Online mode, and the server: a tampered move log, a forged score, an unfinished game, the rate limit, duplicate games, team totals and tie-breaking, the admin point values (validation, wrong key, lockout, saved values used for new submissions, reset), plus all three `/api` handlers.
-
-The script exits with code 1 if any check fails.
 
 ## Files
 
@@ -166,3 +167,11 @@ The AI uses only Minimax, Alpha-Beta Pruning, BFS and DFS, as the assignment req
 - **Online**: the room creator hosts and is authoritative. It checks every guest move with `rules.js` and replies with `reject` plus the true state when a move is illegal. Sides swap on each rematch.
 - **Trap hints**: in trap mode, the squares your opponent could jump to next are striped, so new players can see the good trap targets.
 - **Undo jump**: before you place your trap you can take back the jump (the "Undo jump" button, a click on your knight, or Esc). This changes nothing for the AI or the opponent, because a turn only counts once its trap is placed.
+
+## Team
+
+- **Louis Yuriel Saputra**: Minimax, Alpha-Beta, difficulty levels, stats panel, Alpha-Beta tests.
+- **Clarrence Adriano Hemeldan**: interface, BFS and territory, win-rate and response-time tests.
+- **Shatrya Christiano Chandra**: board representation, rules, DFS, combined evaluation, playtesting.
+
+Want to read the code line by line? [KnightTrap-Annotated](https://github.com/Lorelds/KnightTrap-Annotated) is the same code with an Indonesian explanation above each line, plus a learning guide for each team member.
