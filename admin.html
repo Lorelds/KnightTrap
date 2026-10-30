@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Knight Trap Admin</title>
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#0b0a0d">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23141217'/%3E%3Cpath fill='%23ff8a3d' d='M20 45C21 40 24 37 27 35C24 35 20 36 17 35C13 34 11 31 12 28L13 26C17 20 24 15 31 12L34 5L38 11C45 15 48 24 47 32C46 38 45 42 44 45Z'/%3E%3Crect x='15' y='47' width='34' height='8' rx='3' fill='%23ff8a3d'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;900&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <canvas id="bg-embers" aria-hidden="true"></canvas>
+
+  <main id="app">
+    <section class="screen is-active">
+      <div class="panel-page">
+        <header class="page-head">
+          <a class="icon-btn" href="./" aria-label="Back" style="text-decoration:none">←</a>
+          <h2 data-i18n="adminTitle">Admin Poin</h2>
+        </header>
+
+        <form class="admin-card" id="login" autocomplete="off">
+          <label class="field">
+            <span data-i18n="adminKey">Kunci admin</span>
+            <input type="password" id="admin-key" required autocomplete="current-password">
+            <small data-i18n="adminKeyHint">Nilai ADMIN_KEY dari Vercel. Hanya disimpan di tab ini.</small>
+          </label>
+          <button class="btn btn-primary btn-block" type="submit" data-i18n="adminLoad">Masuk</button>
+        </form>
+
+        <form id="editor" class="admin-editor" hidden novalidate>
+          <h3 class="label" data-i18n="adminPoints">Poin dasar</h3>
+          <div class="admin-grid">
+            <label class="field"><span data-i18n="adminMove">Per langkah</span><input type="number" name="move" min="0" step="1" inputmode="numeric"></label>
+            <label class="field"><span data-i18n="adminWin">Bonus menang</span><input type="number" name="win" min="0" step="1" inputmode="numeric"></label>
+          </div>
+
+          <h3 class="label" data-i18n="adminMultipliers">Pengali per tingkat</h3>
+          <div class="admin-grid admin-grid-4">
+            <label class="field"><span data-i18n="easy">Easy</span><input type="number" name="mult-easy" min="0" step="0.01" inputmode="decimal"></label>
+            <label class="field"><span data-i18n="medium">Medium</span><input type="number" name="mult-medium" min="0" step="0.01" inputmode="decimal"></label>
+            <label class="field"><span data-i18n="hard">Hard</span><input type="number" name="mult-hard" min="0" step="0.01" inputmode="decimal"></label>
+            <label class="field"><span data-i18n="expert">Expert</span><input type="number" name="mult-expert" min="0" step="0.01" inputmode="decimal"></label>
+          </div>
+
+          <h3 class="label" data-i18n="adminPreview">Pratinjau</h3>
+          <div class="pts-box"><div id="admin-preview"></div></div>
+          <p class="pts-note" data-i18n="adminNote">Perubahan berlaku untuk game yang dikirim setelah disimpan.</p>
+
+          <div class="admin-actions">
+            <button class="btn btn-primary btn-lg btn-block" type="submit" id="admin-save" data-i18n="adminSave">Simpan poin</button>
+            <button class="btn btn-ghost" type="button" id="admin-reset" data-i18n="adminReset">Kembalikan default</button>
+          </div>
+        </form>
+
+        <p class="admin-status" id="admin-status" aria-live="polite"></p>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="js/admin.js"></script>
+</body>
+</html>

@@ -141,6 +141,11 @@ export class BoardView {
     this.particles.burst(x, y, kind, Math.max(0.6, Math.min(1.3, scale)));
   }
 
+  popText(sq, label) {
+    const { x, y, scale } = this.center(sq);
+    this.particles.text(x, y - 12 * scale, label, Math.max(0.7, Math.min(1.2, scale)));
+  }
+
   pulse(sq, cls) {
     const b = this.cells[sq];
     b.classList.remove(cls);

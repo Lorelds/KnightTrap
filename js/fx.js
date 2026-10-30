@@ -22,6 +22,7 @@ export class Particles {
     this.ctx = canvas.getContext('2d');
     this.ps = [];
     this.rings = [];
+    this.labels = [];
     this.running = false;
     this.last = 0;
   }
@@ -78,6 +79,13 @@ export class Particles {
         });
       }
     }
+    this.start();
+  }
+
+  // Floating score label such as "+40", rising from (x, y).
+  text(x, y, label, scale = 1) {
+    if (reducedMotion()) return;
+    this.labels.push({ x, y, label, age: 0, life: 1.15, size: 24 * scale });
     this.start();
   }
 
@@ -142,7 +150,28 @@ export class Particles {
     this.ps = this.ps.filter((p) => p.age < p.life);
     ctx.globalCompositeOperation = 'source-over';
 
-    if (this.ps.length || this.rings.length) requestAnimationFrame((tt) => this.frame(tt));
+    for (const l of this.labels) {
+      l.age += dt;
+      const k = l.age / l.life;
+      const rise = 46 * (1 - (1 - k) ** 2);
+      const pop = k < 0.15 ? 0.6 + (k / 0.15) * 0.5 : k < 0.3 ? 1.1 - ((k - 0.15) / 0.15) * 0.1 : 1;
+      ctx.globalAlpha = k < 0.6 ? 1 : Math.max(0, 1 - (k - 0.6) / 0.4);
+      ctx.font = `900 ${Math.round(l.size * pop)}px Cinzel, Georgia, serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = 'rgba(20, 8, 0, 0.85)';
+      ctx.strokeText(l.label, l.x, l.y - rise);
+      ctx.fillStyle = '#ffd36b';
+      ctx.shadowColor = 'rgba(255, 160, 60, 0.8)';
+      ctx.shadowBlur = 12;
+      ctx.fillText(l.label, l.x, l.y - rise);
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
+    }
+    this.labels = this.labels.filter((l) => l.age < l.life);
+
+    if (this.ps.length || this.rings.length || this.labels.length) requestAnimationFrame((tt) => this.frame(tt));
     else {
       ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
       this.running = false;

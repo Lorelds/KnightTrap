@@ -11,6 +11,64 @@ Modes:
 
 The game is plain HTML, CSS and JavaScript ES modules. There is no framework and no build step.
 
+For the NPLC Universitas Ciputra rally (theme: Human vs AI), Single Player games also earn points, and teams are ranked on an online leaderboard. That part is two Vercel Serverless Functions backed by Upstash Redis.
+
+## Points and leaderboard
+
+Only Single Player games against the AI score. Local and Online games give no points. There are two kinds of points, both multiplied by the level (defaults: Easy ×1, Medium ×1.5, Hard ×2, Expert ×2.5):
+
+| What | Points (× level) |
+|---|---|
+| Each of your moves | 10 |
+| Winning | +200 |
+
+A loss keeps its move points. The defaults live in `SCORING` in `js/config.js`. The Single Player screen shows what each level is worth, every difficulty card shows its points per move, and the move history shows what each of your moves earned.
+
+### Changing the points (admin)
+
+Open `/admin.html` and sign in with the `ADMIN_KEY` value. You can change the points per move, the win bonus and the four level multipliers (points are whole numbers 0–100000; multipliers 0–100 with up to two decimals, so ×1.5 works). A preview table shows what each level will be worth. **Save** stores the values in Redis, and **Restore defaults** goes back to `SCORING`.
+
+- New values apply to games submitted after saving. Team totals already on the leaderboard do not change.
+- A game in progress keeps the values it started with.
+- After 10 wrong keys, an IP is locked out of the admin API for 10 minutes.
+
+Before the first Single Player game the game asks for a team or player name (2–20 characters, saved in the browser). After a game, **Submit score** sends the full move log to `POST /api/score`. The server replays it through `js/rules.js` and `js/scoring.js`, rejects illegal moves and unfinished games, and computes the points itself; it ignores any score the client sends. It also allows one submission per 10 seconds per IP and accepts each game only once.
+
+The leaderboard (`GET /api/leaderboard`) ranks teams by their total points over all submitted games, then by wins, then by who submitted first. It shows the top 20, highlights your team and refreshes every 15 seconds while it is open. If the API cannot be reached, the game keeps working: the score is saved on the device and sent the next time the leaderboard loads.
+
+## Deploy on Vercel
+
+1. Import the repository in Vercel. No framework preset and no build command are needed; `vercel.json` serves the folder as is and `api/` becomes the functions.
+2. In the project, open **Storage** (or the **Marketplace**), add **Upstash for Redis**, and connect the database to the project. This sets the connection variables for you.
+3. Check **Settings → Environment Variables**. The functions read either pair:
+   - `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`, or
+   - `KV_REST_API_URL` and `KV_REST_API_TOKEN` (the names the Marketplace integration may use).
+   Also add `ADMIN_KEY`: a long random password for `/admin.html` (for example the output of `openssl rand -hex 16`). Without it the admin page shows "Admin is off".
+   Never commit these values.
+4. Redeploy so the functions pick up the variables, then open `/api/leaderboard`. It should return `{"ok":true,"teams":[]}`. A `503 not-configured` response means the variables are missing.
+
+Local testing with the real functions:
+
+```bash
+npm install
+npm i -g vercel        # once
+vercel link            # once, links the folder to the Vercel project
+vercel env pull        # writes .env.local with the Redis variables (git-ignored)
+vercel dev             # serves the game and /api on http://localhost:3000
+```
+
+With `npx serve .` the game runs, but `/api` does not exist, so the leaderboard shows "Leaderboard offline". That is expected.
+
+### Reset the leaderboard before the event
+
+Open the database in the Upstash console (Vercel → Storage → your database → Open in Upstash), go to the **CLI** tab, and run:
+
+```
+DEL kt:total kt:wins kt:games kt:name kt:first
+```
+
+That clears every team and keeps the admin's point values (`kt:rules`). Rate-limit and duplicate-game keys (`kt:rl:*`, `kt:game:*`) expire on their own. If the database is used only by this game, `FLUSHDB` does the same in one step.
+
 ## Run the game
 
 The AI runs in a module Web Worker, so the page has to come from a web server. Opening `index.html` as a file will not work.
@@ -31,13 +89,14 @@ node tests/run.mjs           # full run: 100 games per level per opponent (about
 node tests/run.mjs --quick   # 20 games per match-up (about 25 seconds)
 ```
 
-This needs Node 18 or newer and no packages. The script checks:
+This needs Node 18 or newer and no packages (the API tests use an in-memory Redis stand-in). The script checks:
 
 1. **Rules**: legal jumps, burning, trap placement, the occupied-square block, loss detection, and serialization.
 2. **Alpha-Beta correctness**: 30 positions from seeded random play of 4–8 turns (seeds `20261028 + k`, printed). Alpha-Beta and plain Minimax must return identical scores and moves at depths 1, 2 and 3. It prints the node counts for both.
 3. **Strength**: each level plays 100 games against a random player and 100 against a greedy player, alternating who moves first, with the 4-second limit on. Medium and above must win at least 90% against random.
 4. **Response time**: average, p95 and maximum think time per level. Every level must stay under 4 s, and Easy through Hard under 1 s.
 5. **Online host validation**: drives the real `Game` class as host and checks that it rejects out-of-turn and illegal guest moves and accepts a legal one.
+6. **Points and leaderboard**: the per-move points and win bonus at all four levels, no points in Local or Online mode, and the server: a tampered move log, a forged score, an unfinished game, the rate limit, duplicate games, team totals and tie-breaking, the admin point values (validation, wrong key, lockout, saved values used for new submissions, reset), plus all three `/api` handlers.
 
 The script exits with code 1 if any check fails.
 
@@ -46,8 +105,9 @@ The script exits with code 1 if any check fails.
 ```
 index.html          screens and markup, plus the knight SVG symbol
 css/style.css       all styling: responsive layout and reduced-motion support
-js/config.js        start squares, difficulty depths, AI limits, network constants
+js/config.js        start squares, difficulty depths, AI limits, network, scoring and leaderboard constants
 js/rules.js         game rules, the single source of truth (no DOM)
+js/scoring.js       points for a move log, team-name cleaning (no DOM; shared with the API)
 js/ai.js            Minimax + Alpha-Beta, BFS/DFS evaluation, random and greedy baselines
 js/ai.worker.js     runs ai.js off the main thread
 js/ai-client.js     promise wrapper around the worker (falls back to the main thread)
@@ -58,6 +118,13 @@ js/main.js          screens, menus, settings, online lobby, and the side panels
 js/fx.js            canvas particles and the ember background
 js/audio.js         WebAudio-synthesized sound effects
 js/i18n.js          Bahasa Indonesia (default) and English strings
+api/score.js        POST /api/score: replay a finished game and add its points
+api/leaderboard.js  GET /api/leaderboard: top 20 teams
+api/config.js       GET /api/config: point values; POST (with ADMIN_KEY): change them
+admin.html          admin page for the point values (js/admin.js)
+js/points-table.js  the "points per level" table used by the game and the admin page
+api/_lib/           Redis client and leaderboard storage (not deployed as endpoints)
+vercel.json         static hosting of the folder, JS module headers
 tests/run.mjs       the test runner described above
 ```
 

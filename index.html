@@ -67,6 +67,10 @@
             <span class="btn-icon" aria-hidden="true">⚑</span>
             <span><span data-i18n="multiplayer">Multiplayer</span><small data-i18n="mpSub">Lokal atau online</small></span>
           </button>
+          <button class="btn btn-lg" data-go="board">
+            <span class="btn-icon" aria-hidden="true">♛</span>
+            <span><span data-i18n="leaderboard">Leaderboard</span><small data-i18n="lbMenuSub">Peringkat Human vs AI</small></span>
+          </button>
           <div class="menu-row">
             <button class="btn btn-ghost" data-go="howto" data-i18n="howToPlay">Cara Bermain</button>
             <button class="btn btn-ghost" data-go="settings" data-i18n="settings">Pengaturan</button>
@@ -87,20 +91,25 @@
         <div class="diff-grid" role="radiogroup" id="diff-grid">
           <button class="diff-card" role="radio" data-diff="easy">
             <span class="diff-flames" aria-hidden="true"><i></i></span>
-            <strong data-i18n="easy">Easy</strong><span class="diff-meta" data-i18n="depth1">Kedalaman 1</span>
+            <strong data-i18n="easy">Easy</strong><span class="diff-meta" data-i18n="depth1">Kedalaman 1</span><span class="diff-pts" data-pts="easy"></span>
           </button>
           <button class="diff-card" role="radio" data-diff="medium">
             <span class="diff-flames" aria-hidden="true"><i></i><i></i></span>
-            <strong data-i18n="medium">Medium</strong><span class="diff-meta" data-i18n="depth2">Kedalaman 2</span>
+            <strong data-i18n="medium">Medium</strong><span class="diff-meta" data-i18n="depth2">Kedalaman 2</span><span class="diff-pts" data-pts="medium"></span>
           </button>
           <button class="diff-card" role="radio" data-diff="hard">
             <span class="diff-flames" aria-hidden="true"><i></i><i></i><i></i></span>
-            <strong data-i18n="hard">Hard</strong><span class="diff-meta" data-i18n="depth3">Kedalaman 3</span>
+            <strong data-i18n="hard">Hard</strong><span class="diff-meta" data-i18n="depth3">Kedalaman 3</span><span class="diff-pts" data-pts="hard"></span>
           </button>
           <button class="diff-card" role="radio" data-diff="expert">
             <span class="diff-flames" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-            <strong data-i18n="expert">Expert</strong><span class="diff-meta" data-i18n="depth4">Kedalaman 4</span>
+            <strong data-i18n="expert">Expert</strong><span class="diff-meta" data-i18n="depth4">Kedalaman 4</span><span class="diff-pts" data-pts="expert"></span>
           </button>
+        </div>
+        <h3 class="label" data-i18n="pointsHow">Cara dapat poin</h3>
+        <div class="pts-box">
+          <div id="sp-points"></div>
+          <p class="pts-note" data-i18n="pointsNote">Setiap langkahmu dapat poin, dan menang dapat bonus.</p>
         </div>
         <h3 class="label" data-i18n="whoFirst">Siapa jalan duluan?</h3>
         <div class="seg" role="radiogroup" id="first-seg">
@@ -112,6 +121,10 @@
           <span><strong>Alpha-Beta Pruning</strong><small data-i18n="abHint">Matikan untuk melihat Minimax biasa memeriksa lebih banyak posisi.</small></span>
           <input type="checkbox" class="switch" id="sp-ab" checked>
         </label>
+        <div class="switch-row">
+          <span><strong data-i18n="teamName">Nama tim</strong><small id="sp-team-name">—</small></span>
+          <button class="btn btn-ghost team-change" id="sp-team-change" data-i18n="change">Ganti</button>
+        </div>
         <button class="btn btn-primary btn-lg btn-block" id="sp-start" data-i18n="startGame">Mulai</button>
       </div>
     </section>
@@ -162,6 +175,26 @@
       </div>
     </section>
 
+    <!-- LEADERBOARD -->
+    <section class="screen" id="screen-board" data-screen="board">
+      <div class="panel-page">
+        <header class="page-head">
+          <button class="icon-btn" data-back aria-label="Back">←</button>
+          <h2 data-i18n="leaderboard">Leaderboard</h2>
+          <button class="icon-btn lb-refresh" id="lb-refresh" aria-label="Refresh">↻</button>
+        </header>
+        <p class="lb-sub">NPLC Universitas Ciputra · Human vs AI</p>
+        <div class="conn-status lb-status"><span class="dot" id="lb-dot"></span><span id="lb-status">…</span></div>
+        <div class="lb">
+          <div class="lb-row lb-head" aria-hidden="true">
+            <span>#</span><span data-i18n="lbTeam">Tim</span><span data-i18n="lbPoints">Poin</span><span data-i18n="lbWins">Menang</span><span data-i18n="lbGames">Main</span>
+          </div>
+          <ol class="lb-list" id="lb-list"></ol>
+        </div>
+        <p class="lb-pending" id="lb-pending" hidden></p>
+      </div>
+    </section>
+
     <!-- HOW TO PLAY -->
     <section class="screen" id="screen-howto" data-screen="howto">
       <div class="panel-page wide">
@@ -206,6 +239,7 @@
         <button class="icon-btn" id="game-exit" aria-label="Menu">←</button>
         <div class="game-mode" id="game-mode">—</div>
         <div class="game-top-right">
+          <span class="score-pill" id="score-pill" hidden><small data-i18n="points">Poin</small><b id="score-val">0</b></span>
           <span class="net-pill" id="net-pill" hidden><span class="dot"></span><span class="net-text"></span></span>
           <button class="icon-btn" id="game-sound" aria-label="Sound">♪</button>
         </div>
@@ -270,6 +304,12 @@
       <h2 id="go-title">—</h2>
       <p id="go-sub"></p>
       <div class="go-stats"><span><b id="go-moves">0</b> <span data-i18n="movesPlayed">langkah</span></span></div>
+      <section class="go-score" id="go-score" hidden>
+        <header class="go-score-head"><span data-i18n="points">Poin</span><span id="go-mult"></span></header>
+        <ul class="go-breakdown" id="go-breakdown"></ul>
+        <button class="btn btn-block" id="go-submit" data-i18n="submitScore">Kirim skor</button>
+        <p class="go-submit-status" id="go-submit-status" aria-live="polite"></p>
+      </section>
       <div class="go-actions">
         <button class="btn btn-primary btn-lg" id="go-rematch" data-i18n="rematch">Main lagi</button>
         <button class="btn btn-ghost" id="go-menu" data-i18n="mainMenu">Menu utama</button>
