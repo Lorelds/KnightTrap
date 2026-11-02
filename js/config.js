@@ -14,6 +14,11 @@ export const DIFFICULTY = Object.freeze({
   expert: 4,
 });
 
+// Longest a player may take for one turn, the jump and the trap together. Change the length here.
+export const TURN_SECONDS = 15;
+// How long past the limit the online host waits for the guest's own move before playing one for it.
+export const TURN_GRACE_MS = 1500;
+
 export const AI = Object.freeze({
   timeLimitMs: 4000,
   maxTrapCandidates: 12,
@@ -29,26 +34,4 @@ export const NET = Object.freeze({
   codeAlphabet: 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789',
   heartbeatMs: 3000,
   timeoutMs: 12000,
-});
-
-// Default Single Player points. Every value is multiplied by the level's multiplier.
-// An admin can replace these at /admin.html; the server then scores with the saved copy.
-// Local and Online games give no points.
-export const SCORING = Object.freeze({
-  move: 10, // each human move
-  win: 200, // beating the AI
-  multiplier: Object.freeze({ easy: 1, medium: 1.5, hard: 2, expert: 2.5 }),
-});
-
-// Bounds the admin page and the server accept for SCORING values.
-export const SCORING_LIMITS = Object.freeze({ pointsMax: 100000, multiplierMax: 100 });
-
-export const LEADERBOARD = Object.freeze({
-  top: 20,
-  pollMs: 15000,
-  rateLimitSec: 10,
-  nameMin: 2,
-  nameMax: 20,
-  adminMaxFails: 10, // wrong admin keys per IP before a lockout
-  adminLockSec: 600,
 });

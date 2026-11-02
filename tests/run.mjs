@@ -1,11 +1,11 @@
 // Knight Trap test runner. No framework: `node tests/run.mjs` (add --quick for 20 games per match-up).
 import { performance } from 'node:perf_hooks';
-import { DIFFICULTY, AI as AICFG } from '../js/config.js';
+import { DIFFICULTY, AI as AICFG, TURN_SECONDS, TURN_GRACE_MS } from '../js/config.js';
 import {
   createState, cloneState, legalJumps, applyJump, applyTrap, endTurn, applyMove,
   validateMove, winner, canMove, isOpen, EMPTY, BURNED, TRAP, serialize, deserialize,
 } from '../js/rules.js';
-import { search, randomMove, greedyMove, evaluate, SPLIT_WEIGHT } from '../js/ai.js';
+import { search, randomMove, greedyMove, evaluate, generateMoves, orderMoves, unpack, SPLIT_WEIGHT, WIN } from '../js/ai.js';
 
 const QUICK = process.argv.includes('--quick');
 const GAMES = QUICK ? 20 : 100;
@@ -53,24 +53,25 @@ console.log('\n1. Rules');
   endTurn(t);
   check('turn passes', t.turn === 1 && t.moves === 1);
 
-  // Cannot land on burned, trap or occupied squares.
+  // Cannot land on burned or trap squares. The enemy's square is a legal jump: landing there eats it.
   const u = createState({ p1: sq('d4'), p2: sq('e6'), first: 0 });
   u.cells[sq('b3')] = BURNED;
   u.cells[sq('c6')] = TRAP;
   const j = legalJumps(u);
   check('blocked: burned square', !j.includes(sq('b3')));
   check('blocked: trap square', !j.includes(sq('c6')));
-  check('blocked: opponent square', !j.includes(sq('e6')));
+  check('opponent square is a legal jump', j.includes(sq('e6')));
+  check('opponent square is not open for a trap', !isOpen(u, sq('e6')));
   check('open squares still legal', j.includes(sq('f5')) && j.includes(sq('b5')));
 
   // Trap validation.
-  check('valid move accepted', validateMove(u, { jump: sq('f5'), trap: sq('a1') }));
-  check('trap on burned rejected', !validateMove(u, { jump: sq('f5'), trap: sq('b3') }));
-  check('trap on opponent rejected', !validateMove(u, { jump: sq('f5'), trap: sq('e6') }));
-  check('trap on own new square rejected', !validateMove(u, { jump: sq('f5'), trap: sq('f5') }));
-  check('trap on burned origin rejected', !validateMove(u, { jump: sq('f5'), trap: sq('d4') }));
+  check('valid move accepted', validateMove(u, { jump: sq('f3'), trap: sq('a1') }));
+  check('trap on burned rejected', !validateMove(u, { jump: sq('f3'), trap: sq('b3') }));
+  check('trap on opponent rejected', !validateMove(u, { jump: sq('f3'), trap: sq('e6') }));
+  check('trap on own new square rejected', !validateMove(u, { jump: sq('f3'), trap: sq('f3') }));
+  check('trap on burned origin rejected', !validateMove(u, { jump: sq('f3'), trap: sq('d4') }));
   check('illegal jump rejected', !validateMove(u, { jump: sq('d5'), trap: sq('a1') }));
-  check('missing trap rejected while squares are open', !validateMove(u, { jump: sq('f5'), trap: -1 }));
+  check('missing trap rejected while squares are open', !validateMove(u, { jump: sq('f3'), trap: -1 }));
   check('garbage rejected', !validateMove(u, { jump: 'x', trap: 3 }) && !validateMove(u, null));
 
   // Loss detection: P1 on a1 with b3 and c2 gone loses on its turn.
@@ -80,6 +81,69 @@ console.log('\n1. Rules');
   check('no legal jump -> side to move loses', winner(v) === 1 && !canMove(v));
   v.turn = 1;
   check('other side still alive', winner(v) === null);
+
+  // Eating: landing exactly on the enemy's square wins at once, with no trap.
+  const eatBlue = createState({ p1: sq('a1'), p2: sq('c2'), first: 0 });
+  check('blue eats: no trap is valid', validateMove(eatBlue, { jump: sq('c2'), trap: -1 }));
+  check('blue eats: a real trap is rejected', !validateMove(eatBlue, { jump: sq('c2'), trap: sq('a7') }));
+  applyMove(eatBlue, { jump: sq('c2'), trap: -1 });
+  check('blue eats: blue wins', winner(eatBlue) === 0);
+  check('blue eats: both knights share the square', eatBlue.pos[0] === sq('c2') && eatBlue.pos[1] === sq('c2'));
+
+  const eatOrange = createState({ p1: sq('e6'), p2: sq('g7'), first: 1 });
+  check('orange eats: no trap is valid', validateMove(eatOrange, { jump: sq('e6'), trap: -1 }));
+  applyMove(eatOrange, { jump: sq('e6'), trap: -1 });
+  check('orange eats: orange wins', winner(eatOrange) === 1);
+
+  // Touching the enemy no longer eats it: a1 -> c2 lands next to c3, and the game goes on.
+  const near = createState({ p1: sq('a1'), p2: sq('c3'), first: 0 });
+  check('touching: a jump next to the enemy still needs a trap', !validateMove(near, { jump: sq('c2'), trap: -1 }));
+  check('touching: the trap is accepted', validateMove(near, { jump: sq('c2'), trap: sq('a7') }));
+  applyMove(near, { jump: sq('c2'), trap: sq('a7') });
+  check('touching: no winner', winner(near) === null && near.pos[0] !== near.pos[1]);
+
+  // A trap can never go on either knight, even when the enemy could eat there next turn.
+  const occ = createState({ p1: sq('a1'), p2: sq('d4'), first: 0 });
+  check('trap on the enemy knight rejected', !validateMove(occ, { jump: sq('b3'), trap: sq('d4') }));
+  check('trap on the jumping knight rejected', !validateMove(occ, { jump: sq('b3'), trap: sq('b3') }));
+
+  // Eating is a legal move, so a knight whose only jump eats is not stuck.
+  const only = createState({ p1: sq('a1'), p2: sq('c2'), first: 0 });
+  only.cells[sq('b3')] = BURNED;
+  check('only jump eats: the side to move is alive', canMove(only) && winner(only) === null);
+
+  check('no trap rejected when the jump does not eat', !validateMove(createState(), { jump: sq('b3'), trap: -1 }));
+
+  const eatAi = search(createState({ p1: sq('a1'), p2: sq('c2'), first: 0 }), { depth: 1 });
+  check('AI eats at depth 1', eatAi.move.trap === -1 && eatAi.move.jump === sq('c2') && eatAi.score === WIN - 1, JSON.stringify(eatAi.move));
+
+  // Evaluation knows eating, with scores that match WIN - ply from the search.
+  const canEat = createState({ p1: sq('a1'), p2: sq('c2'), first: 0 });
+  check('eval: side to move can eat, it wins on the next ply', evaluate(canEat, 0) === WIN - 1 && evaluate(canEat, 1) === -(WIN - 1));
+  check('eval: the score counts the ply', evaluate(canEat, 0, 3) === WIN - 4 && evaluate(canEat, 1, 3) === -(WIN - 4));
+  const stuck = createState();
+  stuck.cells[sq('b3')] = TRAP;
+  stuck.cells[sq('c2')] = BURNED;
+  check('eval: side to move has no jump, it has lost', evaluate(stuck, 0, 2) === -(WIN - 2) && evaluate(stuck, 1, 2) === WIN - 2);
+  const ate = createState({ p1: sq('c2'), p2: sq('c2'), first: 1 });
+  check('eval: side to move was eaten, it has lost', evaluate(ate, 1, 1) === -(WIN - 1) && evaluate(ate, 0, 1) === WIN - 1);
+
+  // From a5 orange can reach b3 but not c2, so even depth 1 must take the safe jump.
+  const safe = search(createState({ p1: sq('a1'), p2: sq('a5'), first: 0 }), { depth: 1 });
+  check('AI at depth 1 avoids a square the enemy can eat', safe.move.jump === sq('c2') && Math.abs(safe.score) < WIN / 2, JSON.stringify(safe.move));
+  // From d4 orange can reach both b3 and c2: depth 1 and depth 2 must both report the same forced loss.
+  const doomed = createState({ p1: sq('a1'), p2: sq('d4'), first: 0 });
+  const d1 = search(doomed, { depth: 1 });
+  const d2 = search(doomed, { depth: 2 });
+  check('forced loss: depth 1 and 2 agree on the score', d1.score === -(WIN - 2) && d2.score === -(WIN - 2), `${d1.score} ${d2.score}`);
+
+  // Move ordering puts the eating move first for both the maximizing and the minimizing side.
+  for (const maximizing of [true, false]) {
+    const o = createState({ p1: sq('a1'), p2: sq('c2'), first: 0 });
+    const ms = generateMoves(o, 0);
+    orderMoves(o, ms, maximizing ? 0 : 1, maximizing);
+    check(`move ordering: eating first (maximizing ${maximizing})`, unpack(ms[0]).jump === sq('c2') && unpack(ms[0]).trap === -1);
+  }
 
   // Trap skipped only when nothing is open.
   const w = createState({ p1: sq('a1'), p2: sq('g7'), first: 0 });
@@ -119,7 +183,7 @@ const positions = [];
     const s = createState();
     let ok = true;
     for (let i = 0; i < turns; i++) {
-      const m = randomMove(s, rng);
+      const m = winner(s) === null ? randomMove(s, rng) : null;
       if (!m) { ok = false; break; }
       applyMove(s, m);
     }
@@ -202,12 +266,10 @@ console.log('\n4. Response time per AI move (Node, same code as the browser work
 console.log('\n5. Online host validation (real Game class, stubbed board and network)');
 {
   const { Game } = await import('../js/game.js');
-  const { setSoundEnabled } = await import('../js/audio.js');
-  setSoundEnabled(false);
   const sent = [];
   const noop = () => {};
-  const board = { render: noop, animateJump: async () => {}, burn: noop, trap: async () => {}, victory: noop };
-  const ui = { update: noop, thinking: noop, stats: noop, log: noop, over: noop };
+  const board = { render: noop };
+  const ui = { update: noop, thinking: noop, stats: noop, log: noop, over: noop, timer: noop, timeUp: noop };
   const g = new Game({
     board, ui, mode: 'online', role: 'host', net: { send: (m) => sent.push(m) },
     players: [{ kind: 'human', name: 'host' }, { kind: 'remote', name: 'guest' }],
@@ -244,252 +306,210 @@ console.log('\n5. Online host validation (real Game class, stubbed board and net
   await flush();
   check('legal guest move accepted and broadcast', g.state.moves === 2 && sent[0]?.t === 'state' && g.phase === 'jump');
   g.dispose();
+
+  // The guest eats the host: no trap, the host accepts it, and the game ends.
+  sent.length = 0;
+  const e = new Game({
+    board, ui, mode: 'online', role: 'host', net: { send: (m) => sent.push(m) },
+    players: [{ kind: 'human', name: 'host' }, { kind: 'remote', name: 'guest' }],
+  });
+  e.start(createState({ p1: sq('e6'), p2: sq('g7'), first: 1 }));
+  e.onNetMessage({ t: 'move', jump: sq('e6'), trap: -1 });
+  await e.netQueue;
+  check('guest eating move accepted, game over and state sent', e.phase === 'over' && e.winner === 1 && sent[0]?.t === 'state', JSON.stringify(sent[0]?.t));
+  e.dispose();
 }
 
 // ---------------------------------------------------------------------------
-console.log('\n6. Points and leaderboard (scoring.js, server replay and /api handlers with a mock Redis)');
+console.log('\n6. Turn timer (real Game class, stubbed board and network, short time limit)');
 {
-  const { SCORING } = await import('../js/config.js');
-  const { scoreGame, pointsEnabled, cleanName, validName, normalizeRules, defaultRules, levelValues } = await import('../js/scoring.js');
-  const { submitScore, readLeaderboard, updateRules, getRules } = await import('../api/_lib/leaderboard.js');
-  const { setRedis } = await import('../api/_lib/redis.js');
-
-  // Finished games from seeded random play: one P1 wins, one P1 loses.
-  const playOut = (seed) => {
-    const rng = mulberry32(seed);
-    const s = createState();
-    const moves = [];
-    while (winner(s) === null) {
-      const m = randomMove(s, rng);
-      moves.push(m);
-      applyMove(s, m);
-    }
-    return { moves, w: winner(s) };
+  const { Game } = await import('../js/game.js');
+  const board = { render: () => {} };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const waitFor = async (cond, ms = 4000) => {
+    const t0 = performance.now();
+    while (!cond() && performance.now() - t0 < ms) await sleep(10);
+    return cond();
   };
-  let winGame = null;
-  let lossGame = null;
-  for (let seed = BASE_SEED; !(winGame && lossGame); seed++) {
-    const g = playOut(seed);
-    if (g.w === 0) winGame ??= g.moves;
-    else lossGame ??= g.moves;
+  const makeUi = () => {
+    const u = { update() {}, thinking() {}, stats() {}, log() {}, over() {}, shown: [], timeUps: 0 };
+    u.timer = (s) => u.shown.push(s);
+    u.timeUp = () => { u.timeUps++; };
+    return u;
+  };
+  const humans = [{ kind: 'human', name: 'p1' }, { kind: 'human', name: 'p2' }];
+  const local = (ui, turnMs) => new Game({ board, ui, mode: 'local', players: humans, turnMs });
+
+  // The default comes from the config, and the display starts there.
+  {
+    const ui = makeUi();
+    const g = new Game({ board, ui, mode: 'local', players: humans });
+    g.start(createState());
+    check('timer: the default limit is TURN_SECONDS', g.turnMs === TURN_SECONDS * 1000 && ui.shown.at(-1) === TURN_SECONDS, String(ui.shown.at(-1)));
+    g.dispose();
   }
 
-  for (const [level, mult] of Object.entries(SCORING.multiplier)) {
-    const l = scoreGame(lossGame, { level, humanSide: 0 });
-    check(`${level}: ${SCORING.move * mult} points per move`, l.humanMoves > 0 && l.movePoints === l.humanMoves * SCORING.move * mult);
-    check(`${level}: loss keeps move points, no win bonus`, l.finished && !l.won && l.winPoints === 0 && l.total === l.movePoints);
-    const w = scoreGame(winGame, { level, humanSide: 0 });
-    check(`${level}: win bonus ${SCORING.win * mult}`, w.won && w.winPoints === SCORING.win * mult);
-    check(`${level}: total = moves + win`, w.total === w.movePoints + w.winPoints && w.total === (w.humanMoves * SCORING.move + SCORING.win) * mult);
-    check(`${level}: per-move points add up to the move points`, w.steps.reduce((a, b) => a + b, 0) === w.movePoints && w.steps.length === winGame.length);
+  // Jump phase: a whole legal move is played and the turn passes.
+  {
+    const ui = makeUi();
+    const g = local(ui, 100);
+    g.start(createState());
+    await waitFor(() => g.history.length >= 1);
+    const h = g.history[0];
+    const turn = g.state.turn;
+    g.dispose();
+    check('time out while jumping: a legal move is played', !!h && validateMove(createState(), { jump: h.jump, trap: h.trap }), JSON.stringify(h));
+    check('time out while jumping: the turn passes', turn === 1 && ui.timeUps === 1, `${turn} ${ui.timeUps}`);
   }
-  const steps = scoreGame(winGame, { level: 'easy', humanSide: 0 }).steps;
-  check('every human move earns the same points, AI moves earn none', steps.every((p, i) => p === (i % 2 === 0 ? SCORING.move : 0)));
-  const easy = scoreGame(winGame, { level: 'easy', humanSide: 0 }).total;
-  check('same game scores x2.5 on Expert vs Easy', scoreGame(winGame, { level: 'expert', humanSide: 0 }).total === 2.5 * easy);
-  check('multipliers are 1, 1.5, 2, 2.5', JSON.stringify(SCORING.multiplier) === JSON.stringify({ easy: 1, medium: 1.5, hard: 2, expert: 2.5 }));
-  const traps = [sq('f5'), sq('d4')].map((tr) => scoreGame([{ jump: sq('b3'), trap: tr }], { level: 'easy', humanSide: 0 }).total);
-  check('where the trap goes does not change the points', traps[0] === SCORING.move && traps[1] === SCORING.move);
 
-  check('Local mode gives no points', !pointsEnabled('local') && scoreGame(winGame, { mode: 'local', level: 'expert', humanSide: 0 }).total === 0);
-  check('Online mode gives no points', !pointsEnabled('online') && scoreGame(winGame, { mode: 'online', level: 'expert', humanSide: 0 }).total === 0);
-  check('Single Player gives points', pointsEnabled('ai'));
+  // Trap phase: the player's own jump stays and a trap goes on an open square.
+  {
+    const ui = makeUi();
+    const g = local(ui, 100);
+    g.start(createState());
+    g.handleCell(sq('c2'));
+    await waitFor(() => g.history.length >= 1);
+    const h = g.history[0];
+    const pos = g.state.pos[0];
+    const cell = h ? g.state.cells[h.trap] : -1;
+    g.dispose();
+    check('time out while placing a trap: the jump is kept', !!h && h.jump === sq('c2') && pos === sq('c2'), JSON.stringify(h));
+    check('time out while placing a trap: a trap is placed', cell === TRAP && h.trap !== sq('c2') && h.trap !== sq('g7'), JSON.stringify(h));
+  }
 
-  const cleaned = cleanName('  <script>Tim   A</script> ');
-  check('name markup stripped', !/[<>&"']/.test(cleaned) && cleaned === 'scriptTim A/script', cleaned);
-  check('name length 2..20', !validName('A') && validName('AB') && validName('x'.repeat(20)) && !validName('x'.repeat(21)));
+  // Undoing a jump keeps the time already used.
+  {
+    const ui = makeUi();
+    const g = local(ui, 400);
+    const t0 = performance.now();
+    g.start(createState());
+    const deadline = g.deadline;
+    await sleep(300);
+    g.handleCell(sq('c2'));
+    g.undoJump();
+    check('undo jump: the deadline does not move', g.phase === 'jump' && g.deadline === deadline);
+    await waitFor(() => g.history.length >= 1);
+    const took = performance.now() - t0;
+    g.dispose();
+    check('undo jump: time still runs out on schedule', took < 650, `${took.toFixed(0)} ms`);
+  }
 
-  // In-memory stand-in for the Upstash client: same method names and return shapes.
-  const mockRedis = () => {
-    const kv = new Map();
-    const zsets = new Map();
-    const hashes = new Map();
-    const zset = (k) => zsets.get(k) ?? zsets.set(k, new Map()).get(k);
-    const hash = (k) => hashes.get(k) ?? hashes.set(k, new Map()).get(k);
-    const ops = {
-      async set(k, v, o = {}) {
-        if (o.nx && kv.has(k)) return null;
-        kv.set(k, String(v));
-        return 'OK';
-      },
-      async zincrby(k, inc, m) {
-        const z = zset(k);
-        z.set(m, (z.get(m) ?? 0) + inc);
-        return z.get(m);
-      },
-      async zcount(k, min) {
-        const excl = String(min).startsWith('(');
-        const lo = Number(String(min).replace('(', ''));
-        return [...zset(k).values()].filter((v) => (excl ? v > lo : v >= lo)).length;
-      },
-      async zrange(k, a, b, o = {}) {
-        const rows = [...zset(k).entries()].sort((x, y) => (o.rev ? y[1] - x[1] : x[1] - y[1])).slice(a, b + 1);
-        return o.withScores ? rows.flat() : rows.map((r) => r[0]);
-      },
-      async hincrby(k, f, n) {
-        const h = hash(k);
-        h.set(f, String(Number(h.get(f) ?? 0) + n));
-        return Number(h.get(f));
-      },
-      async hsetnx(k, f, v) {
-        const h = hash(k);
-        if (h.has(f)) return 0;
-        h.set(f, String(v));
-        return 1;
-      },
-      async get(k) {
-        return kv.get(k) ?? null;
-      },
-      async del(k) {
-        return kv.delete(k) ? 1 : 0;
-      },
-      async incr(k) {
-        kv.set(k, String(Number(kv.get(k) ?? 0) + 1));
-        return Number(kv.get(k));
-      },
-      async expire() {
-        return 1;
-      },
-      async hmget(k, ...fields) {
-        const h = hashes.get(k);
-        return h ? Object.fromEntries(fields.map((f) => [f, h.get(f) ?? null])) : null;
-      },
-    };
-    const batch = () => {
-      const queue = [];
-      const chain = new Proxy({}, {
-        get: (_, op) => op === 'exec'
-          ? async () => { const out = []; for (const [n, args] of queue) out.push(await ops[n](...args)); return out; }
-          : (...args) => { queue.push([op, args]); return chain; },
-      });
-      return chain;
-    };
-    return { ...ops, multi: batch, pipeline: batch };
-  };
+  // The AI has no timer, and the human's clock starts after its move.
+  {
+    const warn = console.warn;
+    console.warn = () => {}; // Node has no module workers, so the AI client says it uses the main thread
+    const ui = makeUi();
+    const g = new Game({
+      board, ui, mode: 'ai', turnMs: 50, ai: { depth: 1, prune: true },
+      players: [{ kind: 'ai', name: 'ai' }, { kind: 'human', name: 'me' }],
+    });
+    g.start(createState());
+    check('AI turn: no clock and a blank timer', g.phase === 'ai' && g.clock === null && ui.shown.at(-1) === null);
+    await sleep(200);
+    check('AI turn: its limit is not the turn limit', ui.timeUps === 0 && g.state.moves === 0 && g.clock === null);
+    await waitFor(() => g.phase === 'jump');
+    check('after the AI moves, the human clock runs', g.state.moves === 1 && g.clock !== null);
+    g.dispose();
+    console.warn = warn;
+  }
 
-  const redis = mockRedis();
-  const body = (over = {}) => ({ name: 'Tim Alpha', difficulty: 'hard', side: 0, id: 'game-0001', moves: winGame, ...over });
-  const expected = scoreGame(winGame, { level: 'hard', humanSide: 0 }).total;
+  // The clock stops when the game ends and when it is disposed.
+  {
+    const ui = makeUi();
+    const g = local(ui, 100);
+    g.start(createState({ p1: sq('a1'), p2: sq('c2'), first: 0 }));
+    g.handleCell(sq('c2'));
+    check('game over: the clock stops', g.phase === 'over' && g.clock === null && ui.shown.at(-1) === null);
+    await sleep(250);
+    check('game over: nothing moves afterwards', g.state.moves === 1 && ui.timeUps === 0);
+    g.dispose();
 
-  let r = await submitScore(redis, body({ score: 999999, total: 999999 }), '10.0.0.1', 1000);
-  check('server: finished legal game accepted', r.status === 200, JSON.stringify(r.body));
-  check('server: forged score ignored, total comes from the replay', r.body.score?.total === expected && r.body.team?.total === expected, `${r.body.team?.total} vs ${expected}`);
+    const ui2 = makeUi();
+    const d = local(ui2, 100);
+    d.start(createState());
+    d.dispose();
+    await sleep(250);
+    check('dispose: the clock stops and nothing moves', d.clock === null && d.state.moves === 0 && ui2.timeUps === 0 && ui2.shown.at(-1) === null);
+  }
 
-  // Swap one human move for a jump that is not legal in that position.
-  const tampered = winGame.map((m) => ({ ...m }));
-  const before = createState();
-  for (let i = 0; i < 2; i++) applyMove(before, tampered[i]);
-  const legal = legalJumps(before);
-  tampered[2].jump = [...Array(49).keys()].find((x) => !legal.includes(x) && x !== before.pos[before.turn]);
-  r = await submitScore(redis, body({ id: 'game-tamper1', moves: tampered }), '10.0.0.2');
-  check('server: tampered move log rejected', r.status === 400 && r.body.error === 'illegal-move', JSON.stringify(r.body));
-  r = await submitScore(redis, body({ id: 'game-tamper2', moves: [...winGame, winGame[0]] }), '10.0.0.2');
-  check('server: move after the game ended rejected', r.status === 400 && r.body.error === 'illegal-move');
-  r = await submitScore(redis, body({ id: 'game-unfinished', moves: winGame.slice(0, -1) }), '10.0.0.2');
-  check('server: unfinished game rejected', r.status === 400 && r.body.error === 'unfinished');
-  r = await submitScore(redis, body({ id: 'game-badlevel', difficulty: 'godlike' }), '10.0.0.2');
-  check('server: unknown difficulty rejected', r.status === 400 && r.body.error === 'bad-difficulty');
-  r = await submitScore(redis, body({ id: 'game-badname', name: '<>' }), '10.0.0.2');
-  check('server: empty-after-cleaning name rejected', r.status === 400 && r.body.error === 'bad-name');
-  r = await submitScore(redis, body({ id: 'game-badmoves', moves: [{ jump: '3', trap: 1 }] }), '10.0.0.2');
-  check('server: malformed moves rejected', r.status === 400 && r.body.error === 'bad-moves');
+  const guestFirst = () => createState({ p1: sq('a1'), p2: sq('g7'), first: 1 });
+  const hostGame = (ui, sent) => new Game({
+    board, ui, mode: 'online', role: 'host', turnMs: 100, net: { send: (m) => sent.push(m) },
+    players: [{ kind: 'human', name: 'host' }, { kind: 'remote', name: 'guest' }],
+  });
 
-  r = await submitScore(redis, body({ id: 'game-0002' }), '10.0.0.1');
-  check('server: second submission within 10 s from the same IP rate-limited', r.status === 429);
-  r = await submitScore(redis, body(), '10.0.0.3');
-  check('server: same game id submitted twice rejected', r.status === 409);
+  // The host waits out the grace period, then plays for a quiet guest and sends the result.
+  {
+    const sent = [];
+    const ui = makeUi();
+    const g = hostGame(ui, sent);
+    g.start(guestFirst());
+    await sleep(100 + TURN_GRACE_MS - 300);
+    check('quiet guest: the host waits through the grace period', g.state.moves === 0 && sent.length === 0, `${g.state.moves} ${sent.length}`);
+    await waitFor(() => sent.length > 0);
+    const m = sent[0];
+    check('quiet guest: the host plays a legal move and sends the state', m?.t === 'state' && m.last.side === 1 && validateMove(guestFirst(), { jump: m.last.jump, trap: m.last.trap }), JSON.stringify(m?.last));
+    check('quiet guest: no time-out message on the host', ui.timeUps === 0);
 
-  // Same team in another case adds up; ties on total and wins go to the earlier team.
-  await submitScore(redis, body({ id: 'game-0003', name: 'tim alpha', moves: lossGame }), '10.0.0.4');
-  await submitScore(redis, body({ id: 'game-0004', name: 'Tie Late', moves: lossGame }), '10.0.0.5', 9000);
-  await submitScore(redis, body({ id: 'game-0005', name: 'Tie Early', moves: lossGame }), '10.0.0.6', 5000);
-  const lb = (await readLeaderboard(redis)).body.teams;
-  const loss = scoreGame(lossGame, { level: 'hard', humanSide: 0 }).total;
-  const alpha = lb.find((x) => x.key === 'tim alpha');
-  check('leaderboard: totals accumulate per team, case-insensitive', alpha?.total === expected + loss && alpha.games === 2 && alpha.wins === 1 && alpha.name === 'Tim Alpha', JSON.stringify(alpha));
-  check('leaderboard: sorted by total', lb.every((x, i) => i === 0 || lb[i - 1].total >= x.total));
-  check('leaderboard: tie broken by earlier first submission', lb.findIndex((x) => x.name === 'Tie Early') < lb.findIndex((x) => x.name === 'Tie Late'));
-  check('leaderboard: ranks are 1..n', lb.every((x, i) => x.rank === i + 1));
-  console.log('   ' + lb.map((x) => `#${x.rank} ${x.name} ${x.total} (${x.wins}/${x.games})`).join(' · '));
+    // A move that arrives after the host already played for the guest is refused.
+    sent.length = 0;
+    g.onNetMessage({ t: 'move', jump: sq('e6'), trap: sq('a7') });
+    await g.netQueue;
+    check('quiet guest: a late move is rejected with the true state', sent[0]?.t === 'reject');
+    g.dispose();
+  }
 
-  // Admin point values.
-  check('rules: defaults are valid', JSON.stringify(defaultRules()) === JSON.stringify(normalizeRules(SCORING)));
-  const custom = { move: 7, win: 500, multiplier: { easy: 1, medium: 1.5, hard: 2.25, expert: 5 } };
-  check('rules: valid custom values accepted', !!normalizeRules(custom));
-  // Values saved before the trap and speed bonuses were removed still load.
-  check('rules: old saved values with extra fields still load', normalizeRules({ ...custom, trapBonus: 5, speedBase: 100, speedPerMove: 5 })?.move === 7);
-  for (const [what, bad] of [
-    ['negative points', { ...custom, move: -1 }],
-    ['fractional points', { ...custom, win: 1.5 }],
-    ['points as a string', { ...custom, move: '10' }],
-    ['missing field', { ...custom, win: undefined }],
-    ['missing level', { ...custom, multiplier: { easy: 1, medium: 2, hard: 3 } }],
-    ['multiplier over the limit', { ...custom, multiplier: { ...custom.multiplier, expert: 101 } }],
-    ['multiplier with 3 decimals', { ...custom, multiplier: { ...custom.multiplier, easy: 1.234 } }],
-  ]) check(`rules: ${what} rejected`, normalizeRules(bad) === null);
-  const lv = levelValues(normalizeRules(custom), 'medium');
-  check('rules: level values round to whole points', lv.move === 11 && lv.win === 750, JSON.stringify(lv));
-  const cs = scoreGame(winGame, { level: 'hard', humanSide: 0, rules: custom });
-  check('rules: custom values change the score', cs.movePoints === cs.humanMoves * Math.round(7 * 2.25) && cs.winPoints === Math.round(500 * 2.25));
+  // A guest move inside the grace period is accepted, and the host does not play for that turn.
+  {
+    const sent = [];
+    const ui = makeUi();
+    const g = hostGame(ui, sent);
+    const t0 = performance.now();
+    g.start(guestFirst());
+    await sleep(300);
+    g.onNetMessage({ t: 'move', jump: sq('e6'), trap: sq('a7') });
+    await g.netQueue;
+    check('guest move in the grace period: accepted', sent[0]?.t === 'state' && sent[0].last.jump === sq('e6') && g.state.pos[1] === sq('e6'), JSON.stringify(sent[0]?.last));
+    await sleep(Math.max(0, 100 + TURN_GRACE_MS + 150 - (performance.now() - t0)));
+    const first = g.history[0];
+    const guestMoves = g.history.filter((h) => h.side === 1).length;
+    g.dispose();
+    check('guest move in the grace period: the backup does not fire', first?.jump === sq('e6') && guestMoves === 1, JSON.stringify(g.history));
+  }
 
-  const ADMIN = 'test-admin-key-123';
-  r = await updateRules(redis, { rules: custom }, '', ADMIN, '10.0.2.1');
-  check('admin: missing key -> 401', r.status === 401);
-  r = await updateRules(redis, { rules: custom }, 'wrong', ADMIN, '10.0.2.1');
-  check('admin: wrong key -> 401', r.status === 401);
-  r = await updateRules(redis, { rules: custom }, ADMIN, undefined, '10.0.2.1');
-  check('admin: no ADMIN_KEY set -> 503', r.status === 503);
-  r = await updateRules(redis, { rules: { ...custom, move: -5 } }, ADMIN, ADMIN, '10.0.2.1');
-  check('admin: invalid values -> 400', r.status === 400 && r.body.error === 'bad-rules');
-  check('admin: rules unchanged after rejected attempts', JSON.stringify(await getRules(redis)) === JSON.stringify(defaultRules()));
-  r = await updateRules(redis, { rules: custom }, ADMIN, ADMIN, '10.0.2.1');
-  check('admin: correct key saves', r.status === 200 && JSON.stringify(await getRules(redis)) === JSON.stringify(normalizeRules(custom)));
-  r = await submitScore(redis, body({ id: 'game-custom1', name: 'Tim Custom' }), '10.0.2.2');
-  const customExpected = scoreGame(winGame, { level: 'hard', humanSide: 0, rules: custom }).total;
-  check('admin: new submissions use the saved values', r.status === 200 && r.body.score.total === customExpected && customExpected !== expected, `${r.body.score?.total} vs ${customExpected}`);
-  r = await updateRules(redis, { reset: true }, ADMIN, ADMIN, '10.0.2.1');
-  check('admin: reset restores the defaults', r.status === 200 && JSON.stringify(r.body.rules) === JSON.stringify(defaultRules()));
-  for (let i = 0; i < 10; i++) await updateRules(redis, { check: true }, 'guess' + i, ADMIN, '10.0.2.9');
-  r = await updateRules(redis, { check: true }, ADMIN, ADMIN, '10.0.2.9');
-  check('admin: locked out after 10 wrong keys, even with the right one', r.status === 429 && r.body.error === 'locked');
+  // The guest's own device acts when its time runs out, and sends a normal move.
+  {
+    const sent = [];
+    const ui = makeUi();
+    const g = new Game({
+      board, ui, mode: 'online', role: 'guest', turnMs: 100, net: { send: (m) => sent.push(m) },
+      players: [{ kind: 'remote', name: 'host' }, { kind: 'human', name: 'guest' }],
+    });
+    g.start(guestFirst());
+    await waitFor(() => sent.length > 0);
+    const m = sent[0];
+    const phase = g.phase;
+    g.dispose();
+    check('guest time out: its device sends a legal move', m?.t === 'move' && validateMove(guestFirst(), { jump: m.jump, trap: m.trap }), JSON.stringify(m));
+    check('guest time out: its device waits for the host next', phase === 'remote' && ui.timeUps === 1, phase);
+  }
 
-  // The real handlers, with req/res stubs shaped like Vercel's Node helpers.
-  const call = async (handler, req) => {
-    const res = {
-      code: 0, headers: {}, body: null,
-      setHeader(k, v) { this.headers[k] = v; },
-      status(c) { this.code = c; return this; },
-      json(b) { this.body = b; return this; },
-    };
-    await handler(req, res);
-    return res;
-  };
-  setRedis(redis);
-  const { default: scoreHandler } = await import('../api/score.js');
-  const { default: lbHandler } = await import('../api/leaderboard.js');
-  let res = await call(lbHandler, { method: 'GET', headers: {} });
-  check('GET /api/leaderboard returns the teams', res.code === 200 && res.body.teams.length === (await readLeaderboard(redis)).body.teams.length && res.body.teams.length > 0);
-  res = await call(scoreHandler, { method: 'GET', headers: {} });
-  check('GET /api/score -> 405', res.code === 405);
-  const post = (b, ip) => ({ method: 'POST', headers: { 'x-forwarded-for': `${ip}, 10.9.9.9` }, body: JSON.stringify(b) });
-  res = await call(scoreHandler, post(body({ id: 'game-handler1', name: 'Tim Gamma' }), '10.0.1.1'));
-  check('POST /api/score (string body) -> 200', res.code === 200 && res.body.team.total === expected, JSON.stringify(res.body));
-  res = await call(scoreHandler, post(body({ id: 'game-handler2', name: 'Tim Gamma' }), '10.0.1.1'));
-  check('POST /api/score rate-limited by the first forwarded IP', res.code === 429);
-  res = await call(scoreHandler, { method: 'POST', headers: {}, body: '{not json' });
-  check('POST /api/score bad JSON -> 400', res.code === 400);
-  const { default: configHandler } = await import('../api/config.js');
-  res = await call(configHandler, { method: 'GET', headers: {} });
-  check('GET /api/config returns the point values', res.code === 200 && JSON.stringify(res.body.rules) === JSON.stringify(defaultRules()));
-  process.env.ADMIN_KEY = ADMIN;
-  res = await call(configHandler, { method: 'POST', headers: { 'x-forwarded-for': '10.0.3.1' }, body: JSON.stringify({ rules: custom }) });
-  check('POST /api/config without a key -> 401', res.code === 401);
-  res = await call(configHandler, { method: 'POST', headers: { authorization: `Bearer ${ADMIN}`, 'x-forwarded-for': '10.0.3.1' }, body: { rules: custom } });
-  check('POST /api/config with the key -> 200', res.code === 200 && res.body.rules.move === 7);
-  delete process.env.ADMIN_KEY;
-  setRedis(null);
-  res = await call(lbHandler, { method: 'GET', headers: {} });
-  check('no Redis env vars -> 503 not-configured', res.code === 503 && res.body.error === 'not-configured');
+  // A guest in the middle of its turn takes the host's result when the host played for it.
+  {
+    const ui = makeUi();
+    const g = new Game({
+      board, ui, mode: 'online', role: 'guest', turnMs: 5000, net: { send: () => {} },
+      players: [{ kind: 'remote', name: 'host' }, { kind: 'human', name: 'guest' }],
+    });
+    g.start(guestFirst());
+    g.handleCell(sq('e6'));
+    const forced = guestFirst();
+    applyMove(forced, { jump: sq('f5'), trap: sq('a7') });
+    g.onNetMessage({ t: 'state', state: serialize(forced), last: { side: 1, from: sq('g7'), jump: sq('f5'), trap: sq('a7') } });
+    await g.netQueue;
+    check('guest mid-turn: it takes the host result', g.state.pos[1] === sq('f5') && g.pendingFrom === null && g.phase === 'remote' && g.clock !== null);
+    g.dispose();
+  }
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASSED' : 'FAILED'}: ${passes} passed, ${failures} failed\n`);

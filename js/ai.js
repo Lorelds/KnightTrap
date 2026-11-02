@@ -26,9 +26,10 @@ function open(cells, pos, sq) {
   return cells[sq] === EMPTY && sq !== pos[0] && sq !== pos[1];
 }
 
+// Jumps available to `side`. The enemy knight's square counts, because landing there eats it.
 function mobility(cells, pos, side) {
   let n = 0;
-  for (const j of NEIGHBORS[pos[side]]) if (open(cells, pos, j)) n++;
+  for (const j of NEIGHBORS[pos[side]]) if (cells[j] === EMPTY) n++;
   return n;
 }
 
@@ -75,8 +76,14 @@ export function dfs(cells, pos, side, mark) {
 }
 
 // Static evaluation from `me`'s point of view. Positive = good for `me`.
-export function evaluate(s, me) {
+// `ply` is the distance from the root, so a result seen here scores the same as the search reaching it.
+export function evaluate(s, me, ply = 0) {
   const { cells, pos, turn } = s;
+  const sign = turn === me ? 1 : -1;
+  // The side to move was just eaten, or has no jump: it has lost.
+  if (pos[0] === pos[1] || !hasJump(s, turn)) return -sign * (WIN - ply);
+  // The side to move can eat right now, so it wins on the next ply.
+  if (NEIGHBORS[pos[turn]].includes(pos[turn ^ 1])) return sign * (WIN - ply - 1);
   const areaA = dfs(cells, pos, 0, markA);
   const areaB = dfs(cells, pos, 1, markB);
   let split = true;
@@ -139,7 +146,7 @@ function trapCandidates(s, opp, out) {
   return out;
 }
 
-// A move is packed as jump | (trap + 1) << 6, so trap -1 (no square left) packs to 0.
+// A move is packed as jump | (trap + 1) << 6, so trap -1 (an eating move, or no square left) packs to 0.
 export const pack = (jump, trap) => jump | ((trap + 1) << 6);
 export const unpack = (m) => ({ jump: m & 63, trap: (m >> 6) - 1 });
 
@@ -149,7 +156,11 @@ export function generateMoves(s, side, out = []) {
   const from = pos[side];
   const opp = side ^ 1;
   for (const j of NEIGHBORS[from]) {
-    if (!open(cells, pos, j)) continue;
+    if (cells[j] !== EMPTY) continue;
+    if (j === pos[opp]) {
+      out.push(pack(j, -1));
+      continue;
+    }
     cells[from] = BURNED;
     pos[side] = j;
     trapCandidates(s, opp, trapBuf);
@@ -181,13 +192,16 @@ function unmake(s, m, from) {
 }
 
 function hasJump(s, side) {
-  for (const n of NEIGHBORS[s.pos[side]]) if (open(s.cells, s.pos, n)) return true;
+  for (const n of NEIGHBORS[s.pos[side]]) if (s.cells[n] === EMPTY) return true;
   return false;
 }
 
-// Best static score first, from the point of view of the side choosing.
-function orderMoves(s, moves, aiSide, maximizing) {
+// An eating move first, because it ends the game. After that, best static score first,
+// from the point of view of the side choosing.
+export function orderMoves(s, moves, aiSide, maximizing) {
+  const enemy = s.pos[s.turn ^ 1];
   const scored = moves.map((m) => {
+    if ((m & 63) === enemy) return { m, v: maximizing ? Infinity : -Infinity };
     const from = make(s, m);
     const v = evaluate(s, aiSide);
     unmake(s, m, from);
@@ -218,8 +232,9 @@ export function search(state, opts = {}) {
     nodes++;
     if ((nodes & 255) === 0 && now() > deadline) throw ABORT;
     const side = s.turn;
+    if (s.pos[0] === s.pos[1]) return side === aiSide ? -(WIN - ply) : WIN - ply;
     if (!hasJump(s, side)) return side === aiSide ? -(WIN - ply) : WIN - ply;
-    if (d === 0) return evaluate(s, aiSide);
+    if (d === 0) return evaluate(s, aiSide, ply);
     const moves = generateMoves(s, side);
     const isMax = side === aiSide;
     if (d >= CFG.orderMinDepth) orderMoves(s, moves, aiSide, isMax);
@@ -309,18 +324,20 @@ export function randomMove(state, rng = Math.random) {
   const jumps = legalJumps(state);
   if (jumps.length === 0) return null;
   const jump = pickRandom(jumps, rng);
+  if (jump === state.pos[state.turn ^ 1]) return { jump, trap: -1 };
   const t = cloneState(state);
   applyJump(t, jump);
   const opens = openSquares(t);
   return { jump, trap: opens.length ? pickRandom(opens, rng) : -1 };
 }
 
-// Greedy: jump to the square with the most follow-up jumps; trap the opponent's
+// Greedy: eat the enemy if it can. Otherwise jump to the square with the most follow-up jumps; trap the opponent's
 // best follow-up square the same way (random open square if the opponent has none).
 export function greedyMove(state, rng = Math.random) {
   const side = state.turn;
   const jumps = legalJumps(state);
   if (jumps.length === 0) return null;
+  if (jumps.includes(state.pos[side ^ 1])) return { jump: state.pos[side ^ 1], trap: -1 };
   const bestBy = (list, scoreFn) => {
     let best = -1;
     let picks = [];
@@ -341,7 +358,7 @@ export function greedyMove(state, rng = Math.random) {
   const t = cloneState(state);
   applyJump(t, jump);
   if (!hasOpenSquare(t)) return { jump, trap: -1 };
-  const oppJumps = legalJumps(t, side ^ 1);
+  const oppJumps = legalJumps(t, side ^ 1).filter((sq) => isOpen(t, sq)); // a trap cannot go on our own knight
   let trap;
   if (oppJumps.length) {
     trap = bestBy(oppJumps, (sq) => {

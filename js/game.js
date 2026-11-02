@@ -5,24 +5,27 @@ import {
   createState, legalJumps, hasOpenSquare, isOpen, applyJump, applyTrap, endTurn,
   winner, validateMove, serialize, deserialize, EMPTY,
 } from './rules.js';
-import { AI as AICFG } from './config.js';
+import { AI as AICFG, SIZE, TURN_SECONDS, TURN_GRACE_MS } from './config.js';
 import { think, cancelThinking } from './ai-client.js';
 import { randomMove } from './ai.js';
-import { sfx } from './audio.js';
 import { t } from './i18n.js';
 import { sleep } from './board.js';
 
 export class Game {
   /**
    * opts.board   BoardView
-   * opts.ui      { update(game), thinking(on), stats(result), log(history), over(info) }
+   * opts.ui      { update(game), thinking(on), stats(result), log(history), over(info), timer(seconds|null), timeUp() }
    * opts.mode    'ai' | 'local' | 'online'
    * opts.players [{ kind, name, sub }, { kind, name, sub }] indexed by side
    * opts.ai      { depth, prune } when mode === 'ai'
    * opts.net     OnlineSession when mode === 'online'; opts.role 'host' | 'guest'
+   * opts.turnMs  time limit for one turn (defaults to TURN_SECONDS)
    */
   constructor(opts) {
     Object.assign(this, opts);
+    this.turnMs ??= TURN_SECONDS * 1000;
+    this.clock = null;
+    this.deadline = null;
     this.state = createState();
     this.phase = 'idle';
     this.history = [];
@@ -49,6 +52,7 @@ export class Game {
 
   dispose() {
     this.disposed = true;
+    this.stopClock();
     cancelThinking();
     this.board.onCell = null;
     this.board.onKnight = null;
@@ -90,16 +94,20 @@ export class Game {
     const humanTurn = this.current?.kind === 'human';
     const v = {
       state: s,
-      turnSide: this.phase === 'over' ? null : side,
       lastLand: this.lastLand,
       lastTrap: this.lastTrap,
       legal: [],
+      eating: [],
       trappable: false,
       threats: [],
       dead: this.phase === 'over' ? this.loser : null,
+      eaten: this.phase === 'over' && s.pos[0] === s.pos[1] ? this.loser : null,
       selectableKnight: null,
     };
-    if (humanTurn && this.phase === 'jump') v.legal = legalJumps(s);
+    if (humanTurn && this.phase === 'jump') {
+      v.legal = legalJumps(s);
+      v.eating = v.legal.filter((sq) => sq === s.pos[side ^ 1]);
+    }
     if (humanTurn && this.phase === 'trap') {
       v.trappable = true;
       v.threats = legalJumps(s, side ^ 1);
@@ -123,16 +131,79 @@ export class Game {
     const p = this.current;
     if (p.kind === 'human') {
       this.phase = 'jump';
-      if (this.mode === 'local' && this.history.length) sfx.turn();
+      this.startClock();
       this.refresh();
     } else if (p.kind === 'ai') {
       this.phase = 'ai';
+      this.stopClock();
       this.refresh();
       this.runAi();
     } else {
       this.phase = 'remote';
+      this.startClock();
       this.refresh();
     }
+  }
+
+  // ---- Turn clock -------------------------------------------------------------
+  // One clock per turn, for the jump and the trap together. The AI has its own limit and no clock.
+
+  startClock() {
+    this.stopClock();
+    this.deadline = performance.now() + this.turnMs;
+    this.ui.timer(Math.ceil(this.turnMs / 1000));
+    this.clock = setInterval(() => this.tickClock(), 100);
+  }
+
+  stopClock() {
+    clearInterval(this.clock);
+    this.clock = null;
+    this.deadline = null;
+    this.ui.timer(null);
+  }
+
+  tickClock() {
+    const left = this.deadline - performance.now();
+    this.ui.timer(Math.max(0, Math.ceil(left / 1000)));
+    if (this.current.kind === 'human') {
+      if (left <= 0) this.timeUp();
+    } else if (this.role === 'host' && left <= -TURN_GRACE_MS) {
+      this.stopClock();
+      this.netQueue = this.netQueue.then(() => this.playForQuietGuest()).catch((err) => console.error(err));
+    }
+  }
+
+  // Time ran out on this device's turn. Goes through handleCell like a click,
+  // so the rules and the online send are not duplicated.
+  timeUp() {
+    this.stopClock();
+    this.ui.timeUp();
+    const s = this.state;
+    if (this.phase === 'jump') {
+      const { jump, trap } = randomMove(s);
+      this.handleCell(jump);
+      if (this.phase === 'trap') this.handleCell(trap);
+    } else if (this.phase === 'trap') {
+      const open = [];
+      for (let sq = 0; sq < SIZE; sq++) if (isOpen(s, sq)) open.push(sq);
+      this.handleCell(open[Math.floor(Math.random() * open.length)]);
+    }
+  }
+
+  // The guest stayed quiet past its limit and the grace period, so the host plays for it.
+  async playForQuietGuest() {
+    if (this.disposed || this.phase !== 'remote') return;
+    await this.hostPlay(randomMove(this.state));
+  }
+
+  // Host only: play a guest move and tell the guest the result.
+  async hostPlay(move) {
+    const side = this.state.turn;
+    const from = this.state.pos[side];
+    await this.playMove(move);
+    if (this.disposed) return;
+    this.broadcast(side, from, move);
+    this.nextTurn();
   }
 
   async runAi() {
@@ -161,88 +232,55 @@ export class Game {
     this.nextTurn();
   }
 
-  // Animated full move for the AI or a remote player.
+  // Full move for the AI or a remote player. Input stays locked until the trap is placed.
   async playMove(move) {
     const s = this.state;
     const side = s.turn;
     this.phase = 'animating';
+    this.stopClock();
     const from = applyJump(s, move.jump);
     this.lastLand = move.jump;
     this.lastTrap = null;
-    sfx.jump();
-    const anim = this.board.animateJump(side, from, move.jump);
     this.refresh();
-    this.board.burn(from);
-    sfx.burn();
-    await anim;
-    if (this.disposed) return;
     await sleep(160);
+    if (this.disposed) return;
     if (move.trap >= 0) {
       applyTrap(s, move.trap);
       this.lastTrap = move.trap;
       this.refresh();
-      sfx.trap();
-      await this.board.trap(move.trap);
     }
     endTurn(s);
     this.record(side, from, move);
   }
 
-  async handleCell(sq) {
+  handleCell(sq) {
     if (this.disposed || this.current?.kind !== 'human') return;
     const s = this.state;
-    const side = s.turn;
     if (this.phase === 'jump') {
-      if (!legalJumps(s).includes(sq)) {
-        if (sq !== s.pos[side]) sfx.invalid();
-        return;
-      }
-      this.phase = 'animating';
+      if (!legalJumps(s).includes(sq)) return;
       const from = applyJump(s, sq);
       this.pendingFrom = from;
       this.pendingJump = sq;
       this.lastLand = sq;
       this.lastTrap = null;
-      sfx.jump();
-      const anim = this.board.animateJump(side, from, sq);
-      this.refresh();
-      this.board.burn(from);
-      sfx.burn();
-      await anim;
-      if (this.disposed) return;
-      if (!hasOpenSquare(s)) return this.completeHumanMove(-1);
+      if (sq === s.pos[s.turn ^ 1] || !hasOpenSquare(s)) return this.completeHumanMove(-1);
       this.phase = 'trap';
       this.refresh();
     } else if (this.phase === 'trap') {
-      if (!isOpen(s, sq)) {
-        sfx.invalid();
-        return;
-      }
-      this.phase = 'animating';
+      if (!isOpen(s, sq)) return;
       applyTrap(s, sq);
       this.lastTrap = sq;
-      this.refresh();
-      sfx.trap();
-      await this.board.trap(sq);
-      if (this.disposed) return;
       this.completeHumanMove(sq);
     }
   }
 
-  async undoJump() {
+  undoJump() {
     if (this.phase !== 'trap' || this.pendingFrom == null) return;
     const s = this.state;
     const side = s.turn;
-    const at = s.pos[side];
-    this.phase = 'animating';
     s.pos[side] = this.pendingFrom;
     s.cells[this.pendingFrom] = EMPTY;
     this.lastLand = null;
-    const anim = this.board.animateJump(side, at, this.pendingFrom);
-    this.refresh();
-    sfx.select();
-    await anim;
-    if (this.disposed) return;
     this.pendingFrom = null;
     this.pendingJump = null;
     this.phase = 'jump';
@@ -250,6 +288,7 @@ export class Game {
   }
 
   completeHumanMove(trap) {
+    this.stopClock();
     const s = this.state;
     const side = s.turn;
     const move = { jump: this.pendingJump, trap };
@@ -266,21 +305,19 @@ export class Game {
   }
 
   record(side, from, move) {
-    this.history.push({ side, from, jump: move.jump, trap: move.trap });
+    this.history.push({ side, from, jump: move.jump, trap: move.trap, ate: move.jump === this.state.pos[side ^ 1] });
     this.ui.log(this.history);
   }
 
   finish(w) {
+    this.stopClock();
     this.phase = 'over';
     this.winner = w;
     this.loser = w ^ 1;
     this.refresh();
-    this.board.victory(w, this.state.pos[w]);
-    const me = this.mySide;
-    if (me == null || me === w) sfx.win();
-    else sfx.lose();
+    const eaten = this.state.pos[0] === this.state.pos[1];
     setTimeout(() => {
-      if (!this.disposed) this.ui.over({ winner: w, loser: w ^ 1, moves: this.state.moves, game: this });
+      if (!this.disposed) this.ui.over({ winner: w, loser: w ^ 1, moves: this.state.moves, game: this, eaten });
     }, 900);
   }
 
@@ -291,7 +328,7 @@ export class Game {
   }
 
   onNetMessage(msg) {
-    // Handle messages one at a time so an animation never overlaps the next update.
+    // Handle messages one at a time so a move in progress never overlaps the next update.
     this.netQueue = this.netQueue.then(() => this.handleNet(msg)).catch((err) => console.error(err));
   }
 
@@ -303,12 +340,7 @@ export class Game {
         this.net.send({ t: 'reject', state: serialize(this.state) });
         return;
       }
-      const side = this.state.turn;
-      const from = this.state.pos[side];
-      await this.playMove(move);
-      if (this.disposed) return;
-      this.broadcast(side, from, move);
-      this.nextTurn();
+      await this.hostPlay(move);
       return;
     }
     if (this.role === 'guest' && (msg.t === 'state' || msg.t === 'reject')) {

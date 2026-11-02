@@ -50,18 +50,21 @@ export function deserialize(o) {
   return { cells: Int8Array.from(o.cells), pos: [o.pos[0] | 0, o.pos[1] | 0], turn: o.turn & 1, moves: o.moves | 0 };
 }
 
+// Open means a trap can go here: not burned, not a trap, and no knight on it.
 export function isOpen(s, sq) {
   return s.cells[sq] === EMPTY && sq !== s.pos[0] && sq !== s.pos[1];
 }
 
+// A jump can land on any square that is not burned or a trap.
+// The enemy knight's square counts: landing there eats it.
 export function legalJumps(s, side = s.turn) {
   const out = [];
-  for (const n of NEIGHBORS[s.pos[side]]) if (isOpen(s, n)) out.push(n);
+  for (const n of NEIGHBORS[s.pos[side]]) if (s.cells[n] === EMPTY) out.push(n);
   return out;
 }
 
 export function canMove(s, side = s.turn) {
-  for (const n of NEIGHBORS[s.pos[side]]) if (isOpen(s, n)) return true;
+  for (const n of NEIGHBORS[s.pos[side]]) if (s.cells[n] === EMPTY) return true;
   return false;
 }
 
@@ -94,6 +97,7 @@ export function validateMove(s, move) {
   if (!move || !Number.isInteger(move.jump) || !Number.isInteger(move.trap)) return false;
   if (winner(s) !== null) return false;
   if (!legalJumps(s).includes(move.jump)) return false;
+  if (move.jump === s.pos[s.turn ^ 1]) return move.trap === -1; // eating ends the game, so no trap
   const t = cloneState(s);
   applyJump(t, move.jump);
   if (!hasOpenSquare(t)) return move.trap === -1;
@@ -107,8 +111,10 @@ export function applyMove(s, move) {
   return from;
 }
 
-// The side to move loses if it has no legal jump. Returns the winning side, or null.
+// The side to move loses if it was just eaten (both knights on one square) or has no legal jump.
+// Returns the winning side, or null.
 export function winner(s) {
+  if (s.pos[0] === s.pos[1]) return s.turn ^ 1;
   return canMove(s, s.turn) ? null : s.turn ^ 1;
 }
 
