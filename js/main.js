@@ -111,7 +111,7 @@ function buildHowTo() {
     {
       title: t('step3Title'),
       text: t('step3Text'),
-      board: miniBoard({ k0: [0, 3], k1: [4, 4], burned: [[2, 2]], trap: [[2, 3]], threat: [[3, 2]] }),
+      board: miniBoard({ k0: [0, 3], k1: [4, 4], burned: [[2, 2]], trap: [[2, 3]] }),
     },
   ];
   $('#howto-steps').innerHTML = steps
@@ -121,7 +121,7 @@ function buildHowTo() {
     .join('');
   const rules = $('.lose-rule');
   for (const p of $$('.added-rule', rules)) p.remove();
-  rules.insertAdjacentHTML('beforeend', `<p class="added-rule">${t('timeRule', TURN_SECONDS)}</p><p class="added-rule">${t('hintRule')}</p>`);
+  rules.insertAdjacentHTML('beforeend', `<p class="added-rule">${t('undoRule')}</p><p class="added-rule">${t('timeRule', TURN_SECONDS)}</p><p class="added-rule">${t('hintRule')}</p>`);
 }
 
 // ---- Game UI glue -----------------------------------------------------------
